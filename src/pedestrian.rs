@@ -6,11 +6,10 @@ use std::time::Duration;
 /// belongs to the Junction (which checks allRed first). This controller
 /// only manages the crossing state machine.
 pub struct PedestrianController {
-    // TODO: add fields
-    //   waiting: bool,
-    //   crossing: bool,
-    //   alert_active: bool,
-    //   elapsed: Duration,
+    waiting: bool,
+    crossing: bool,
+    alert_active: bool,
+    elapsed: Duration,
 }
 
 /// The duration for which pedestrians are held (all traffic on Red).
@@ -19,50 +18,63 @@ pub const PEDESTRIAN_HOLD_DURATION: Duration = Duration::from_secs(15);
 impl PedestrianController {
     /// Creates a new controller with no pending requests and no active crossing.
     pub fn new() -> Self {
-        unimplemented!()
+        PedestrianController {
+            waiting: false,
+            crossing: false,
+            alert_active: false,
+            elapsed: Duration::ZERO,
+        }
     }
 
     /// Registers a pedestrian crossing request.
     pub fn request(&mut self) {
-        unimplemented!()
+        self.waiting = true;
     }
 
     /// Returns true if a pedestrian is waiting to cross.
     pub fn is_waiting(&self) -> bool {
-        unimplemented!()
+        self.waiting
     }
 
     /// Returns true if pedestrians are currently crossing.
     pub fn is_crossing(&self) -> bool {
-        unimplemented!()
+        self.crossing
     }
 
     /// Returns true if the pedestrian alert (audible + visual) is active.
     pub fn is_alert_active(&self) -> bool {
-        unimplemented!()
+        self.alert_active
     }
 
     /// Begins the pedestrian crossing phase.
     /// Precondition: a pedestrian must be waiting.
     /// Sets crossing = true, alert_active = true, resets elapsed.
     pub fn begin_crossing(&mut self) {
-        unimplemented!()
+        self.crossing = true;
+        self.alert_active = true;
+        self.waiting = false;
+        self.elapsed = Duration::ZERO;
     }
 
     /// Ends the pedestrian crossing phase.
     /// Resets crossing, waiting, and alert to false.
     pub fn end_crossing(&mut self) {
-        unimplemented!()
+        self.crossing = false;
+        self.alert_active = false;
+        self.waiting = false;
+        self.elapsed = Duration::ZERO;
     }
 
     /// Increments the crossing elapsed timer by dt.
     pub fn tick(&mut self, dt: Duration) {
-        unimplemented!()
+        if self.crossing {
+            self.elapsed += dt;
+        }
     }
 
     /// Returns true if the crossing is active and the hold duration has elapsed.
     pub fn should_end(&self) -> bool {
-        unimplemented!()
+        self.crossing && self.elapsed >= PEDESTRIAN_HOLD_DURATION
     }
 }
 
