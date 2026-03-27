@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target
+Cargo.lock
+
+# IDE — RustRover / IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# IDE — VS Code
+.vscode/
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Editor swap/backup files
+*~
+*.swp
+*.swo
+*.bak
