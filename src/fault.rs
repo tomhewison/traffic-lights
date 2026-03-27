@@ -15,42 +15,63 @@ pub enum Fault {
 
 /// Tracks all faults and manages the system shutdown state.
 pub struct FaultMonitor {
-    // TODO: add fields
-    //   all_off: bool,
-    //   alert_raised: bool,
-    //   faults: Vec<Fault>,
+    all_off: bool,
+    alert_raised: bool,
+    faults: Vec<Fault>,
 }
 
 impl FaultMonitor {
     /// Creates a new fault monitor with no faults.
     pub fn new() -> Self {
-        unimplemented!()
+        FaultMonitor {
+            all_off: false,
+            alert_raised: false,
+            faults: Vec::new(),
+        }
     }
 
     /// Reports a fault. Light and progress faults trigger a full shutdown (allOff).
     /// Sensor faults raise an alert but do NOT trigger shutdown.
     pub fn report(&mut self, fault: Fault) {
-        unimplemented!()
+        match fault {
+            Fault::LightFailIlluminate(_)
+            | Fault::LightFailDeilluminate(_)
+            | Fault::ProgressFault(_) => {
+                self.all_off = true;
+                self.alert_raised = true;
+            }
+            Fault::SensorFault(_) => {
+                self.alert_raised = true;
+            }
+        }
+        self.faults.push(fault);
     }
 
     /// Returns true if the system is in the allOff shutdown state.
     pub fn is_all_off(&self) -> bool {
-        unimplemented!()
+        self.all_off
     }
 
     /// Returns true if the monitoring system has raised an alert.
     pub fn alert_raised(&self) -> bool {
-        unimplemented!()
+        self.alert_raised
     }
 
     /// Returns true if any light fault (illuminate or de-illuminate) has been reported.
     pub fn has_light_fault(&self) -> bool {
-        unimplemented!()
+        self.faults.iter().any(|f| {
+            matches!(
+                f,
+                Fault::LightFailIlluminate(_) | Fault::LightFailDeilluminate(_)
+            )
+        })
     }
 
     /// Returns true if any progress fault has been reported.
     pub fn has_progress_fault(&self) -> bool {
-        unimplemented!()
+        self.faults
+            .iter()
+            .any(|f| matches!(f, Fault::ProgressFault(_)))
     }
 }
 
