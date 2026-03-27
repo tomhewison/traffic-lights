@@ -1,3 +1,4 @@
+use crate::direction::PairId::{EastWest, NorthSouth};
 use std::time::Duration;
 
 /// Cardinal direction identifying a traffic light installation.
@@ -19,22 +20,40 @@ pub enum PairId {
 impl Direction {
     /// Returns the pair this direction belongs to.
     pub fn pair_id(self) -> PairId {
-        unimplemented!()
+        match self {
+            Direction::North | Direction::South => NorthSouth,
+            Direction::East | Direction::West => EastWest
+        }
     }
 
     /// Returns the paired (opposing) direction.
     pub fn partner(self) -> Direction {
-        unimplemented!()
+           match self {
+               Direction::North => Direction::South,
+               Direction::South => Direction::North,
+               Direction::East => Direction::West,
+               Direction::West => Direction::East
+           }
     }
 
     /// Returns true if self and other are on perpendicular roads.
     pub fn intersects(self, other: Direction) -> bool {
-        unimplemented!()
+        match (self,other) {
+            (Direction::North, Direction::East) => true,
+            (Direction::North, Direction::West) => true,
+            (Direction::East, Direction::North) => true,
+            (Direction::East, Direction::South) => true,
+            _ => false
+
+        }
     }
 
     /// Returns true if self and other are in the same pair.
     pub fn is_paired_with(self, other: Direction) -> bool {
-        unimplemented!()
+        if(self.partner() == other && self == other.partner()) {
+            return true;
+        }
+        false
     }
 }
 
