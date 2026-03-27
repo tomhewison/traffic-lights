@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 /// Abstraction over time, allowing tests to control the clock.
@@ -16,26 +17,30 @@ impl Clock for SystemClock {
 }
 
 /// A fake clock for testing. Time only advances when you call `advance()`.
+/// Cloning shares the same underlying time so tests can advance time after
+/// passing the clock into a [`Junction`](crate::junction::Junction).
+#[derive(Clone)]
 pub struct MockClock {
-    // TODO: implement using std::cell::Cell<Instant> for interior mutability
-    //   current: std::cell::Cell<Instant>,
+    current: Rc<std::cell::Cell<Instant>>,
 }
 
 impl MockClock {
     /// Creates a new mock clock starting at the current instant.
     pub fn new() -> Self {
-        unimplemented!()
+        MockClock {
+            current: Rc::new(std::cell::Cell::new(Instant::now())),
+        }
     }
 
     /// Advances time forward by the given duration.
     pub fn advance(&self, duration: Duration) {
-        unimplemented!()
+        self.current.set(self.current.get() + duration);
     }
 }
 
 impl Clock for MockClock {
     fn now(&self) -> Instant {
-        unimplemented!()
+        self.current.get()
     }
 }
 
@@ -49,7 +54,7 @@ mod tests {
         let t0 = clock.now();
         clock.advance(Duration::from_secs(5));
         let t1 = clock.now();
-        assert_eq!(t1 - t0, Duration::from_secs(5));
+        assert_eq!((t1 - t0), Duration::from_secs(5));
     }
 
     #[test]
