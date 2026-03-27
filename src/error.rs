@@ -20,7 +20,14 @@ pub enum TransitionError {
 
 impl fmt::Display for TransitionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        unimplemented!()
+        match self {
+            TransitionError::SystemShutdown => write!(f, "system is shut down"),
+            TransitionError::PedestrianCrossing => write!(f, "pedestrians are crossing"),
+            TransitionError::ConflictingSignal => write!(f, "conflicting signal"),
+            TransitionError::LightFault => write!(f, "light fault"),
+            TransitionError::ProgressFault => write!(f, "progress fault"),
+            TransitionError::InvalidTransition => write!(f, "invalid transition"),
+        }
     }
 }
 
