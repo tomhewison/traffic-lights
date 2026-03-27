@@ -2,81 +2,154 @@ use std::time::Duration;
 use crate::direction::Direction;
 use crate::signal::Signal;
 
+/// Default maximum green when competing traffic is present (no sensor fault).
+const DEFAULT_COMPETING_GREEN: Duration = Duration::from_secs(30);
+
 /// A single traffic light installation at one approach to the junction.
 ///
 /// Holds the current signal state, elapsed time in that state, sensor status,
 /// and green timeout. Does NOT enforce cross-installation invariants — that is
 /// the Junction's responsibility.
 pub struct Installation {
-    // TODO: add fields
-    //   direction: Direction,
-    //   signal: Signal,
-    //   elapsed: Duration,
-    //   sensor_fault: bool,
-    //   green_timeout: Duration,
+    direction: Direction,
+    signal: Signal,
+    elapsed: Duration,
+    sensor_fault: bool,
+    green_timeout: Duration,
 }
 
 impl Installation {
     /// Creates a new installation starting at Red with no faults.
     pub fn new(direction: Direction) -> Self {
-        unimplemented!()
+        Installation {
+            direction,
+            signal: Signal::Red,
+            elapsed: Duration::ZERO,
+            sensor_fault: false,
+            green_timeout: Duration::MAX,
+        }
     }
 
     /// Returns the current signal state.
     pub fn signal(&self) -> Signal {
-        unimplemented!()
+        self.signal
     }
 
     /// Returns the direction this installation faces.
     pub fn direction(&self) -> Direction {
-        unimplemented!()
+        self.direction
     }
 
     /// Returns true if the signal is active (RA, G, or A).
     pub fn is_active(&self) -> bool {
-        unimplemented!()
+        self.signal.is_active()
     }
 
     /// Advances to the next valid signal state. Resets elapsed to zero.
     pub fn advance(&mut self) {
-        unimplemented!()
+        self.signal = self.signal.next();
+        self.elapsed = Duration::ZERO;
     }
 
     /// Shuts down the installation (sets signal to Off).
     pub fn shutdown(&mut self) {
-        unimplemented!()
+        self.signal = Signal::Off;
     }
 
     /// Returns the time elapsed since entering the current signal state.
     pub fn elapsed(&self) -> Duration {
-        unimplemented!()
+        self.elapsed
     }
 
     /// Increments the elapsed time by the given delta.
     pub fn tick(&mut self, dt: Duration) {
-        unimplemented!()
+        self.elapsed += dt;
     }
 
     /// Returns true if the elapsed time exceeds the maximum duration
     /// for the current signal phase.
     pub fn should_advance(&self) -> bool {
-        unimplemented!()
+        match self.signal {
+            Signal::Red | Signal::Off => false,
+            Signal::RedAmber | Signal::Amber => self
+                .signal
+                .max_duration()
+                .is_some_and(|max| self.elapsed >= max),
+            Signal::Green => {
+                if self.sensor_fault {
+                    self.elapsed >= Duration::from_secs(30)
+                } else if self.green_limited() {
+                    self.elapsed >= self.green_timeout
+                } else {
+                    false
+                }
+            }
+        }
     }
 
     /// Reports a sensor fault. Sets green timeout to 30s.
     pub fn set_sensor_fault(&mut self) {
-        unimplemented!()
+        self.sensor_fault = true;
+        self.green_timeout = Duration::from_secs(30);
     }
 
     /// Returns true if the sensor has faulted.
     pub fn has_sensor_fault(&self) -> bool {
-        unimplemented!()
+        self.sensor_fault
     }
 
     /// Returns the current green timeout duration.
     pub fn green_timeout(&self) -> Duration {
-        unimplemented!()
+        self.green_timeout
     }
+
+    /// Sets the maximum green duration for the current or next green phase (junction use).
+    pub(crate) fn set_green_timeout(&mut self, d: Duration) {
+        self.green_timeout = d;
+    }
+
+    /// Resets elapsed in the current phase (e.g. competing traffic arrived mid-green).
+    pub(crate) fn reset_elapsed(&mut self) {
+        self.elapsed = Duration::ZERO;
+    }
+
+    fn green_limited(&self) -> bool {
+        !self.sensor_fault && self.green_timeout < Duration::MAX / 4
+    }
+
+    /// Maximum allowed duration in the current phase before a progress fault is raised (junction use).
+    pub(crate) fn progress_max_elapsed(&self) -> Option<Duration> {
+        match self.signal {
+            Signal::RedAmber | Signal::Amber => Some(Duration::from_millis(1500)),
+            Signal::Green => {
+                if self.sensor_fault {
+                    Some(Duration::from_secs(30))
+                } else if self.green_limited() {
+                    Some(self.green_timeout)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Used when entering green from [`Installation::advance`]: junction sets limits on both pair members.
+pub(crate) fn configure_green_timeout_for_pair(
+    a: &mut Installation,
+    b: &mut Installation,
+    competing_on_intersecting: bool,
+) {
+    let limit = if a.has_sensor_fault() || b.has_sensor_fault() {
+        Duration::from_secs(30)
+    } else if competing_on_intersecting {
+        DEFAULT_COMPETING_GREEN
+    } else {
+        Duration::MAX
+    };
+    a.set_green_timeout(limit);
+    b.set_green_timeout(limit);
 }
 
 #[cfg(test)]
