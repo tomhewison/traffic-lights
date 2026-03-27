@@ -3,9 +3,21 @@ use crate::clock::Clock;
 use crate::direction::Direction;
 use crate::error::TransitionError;
 use crate::fault::{Fault, FaultMonitor};
-use crate::installation::Installation;
+use crate::installation::{configure_green_timeout_for_pair, Installation};
 use crate::pedestrian::PedestrianController;
 use crate::signal::Signal;
+
+/// Extra time beyond a phase's nominal maximum before a progress fault is raised.
+const PROGRESS_TOLERANCE: Duration = Duration::from_millis(500);
+
+fn waiting_idx(direction: Direction) -> usize {
+    match direction {
+        Direction::North => 0,
+        Direction::South => 1,
+        Direction::East => 2,
+        Direction::West => 3,
+    }
+}
 
 /// Top-level junction controller.
 ///
@@ -13,126 +25,362 @@ use crate::signal::Signal;
 /// a pedestrian controller, and a fault monitor. Enforces all cross-pair
 /// safety invariants from the formal specification.
 pub struct Junction<C: Clock> {
-    // TODO: add fields
-    //   ns_a: Installation,  // North
-    //   ns_b: Installation,  // South
-    //   ew_a: Installation,  // East
-    //   ew_b: Installation,  // West
-    //   pedestrian: PedestrianController,
-    //   fault_monitor: FaultMonitor,
-    //   clock: C,
-    //   last_tick: std::time::Instant,
-    _clock: std::marker::PhantomData<C>, // placeholder until you add the real clock field
+    ns_a: Installation,
+    ns_b: Installation,
+    ew_a: Installation,
+    ew_b: Installation,
+    pedestrian: PedestrianController,
+    fault_monitor: FaultMonitor,
+    clock: C,
+    last_tick: std::time::Instant,
+    waiting: [bool; 4],
 }
 
 impl<C: Clock> Junction<C> {
     /// Creates a new junction with the given clock. All installations start Red.
     pub fn with_clock(clock: C) -> Self {
-        unimplemented!()
+        let now = clock.now();
+        Junction {
+            ns_a: Installation::new(Direction::North),
+            ns_b: Installation::new(Direction::South),
+            ew_a: Installation::new(Direction::East),
+            ew_b: Installation::new(Direction::West),
+            pedestrian: PedestrianController::new(),
+            fault_monitor: FaultMonitor::new(),
+            clock,
+            last_tick: now,
+            waiting: [false; 4],
+        }
     }
 
     /// Attempts to advance the NS pair to the next signal state.
     /// Returns Err if any precondition is violated.
     pub fn try_advance_ns(&mut self) -> Result<(), TransitionError> {
-        unimplemented!()
+        if self.fault_monitor.is_all_off() {
+            return Err(TransitionError::SystemShutdown);
+        }
+        if self.pedestrian.is_crossing() {
+            return Err(TransitionError::PedestrianCrossing);
+        }
+        let s = self.ns_a.signal();
+        if s == Signal::Off {
+            return Err(TransitionError::InvalidTransition);
+        }
+        let next = s.next();
+        if (s == Signal::Red && next == Signal::RedAmber)
+            || (s == Signal::RedAmber && next == Signal::Green)
+        {
+            if !self.ew_pair_all_red() {
+                return Err(TransitionError::ConflictingSignal);
+            }
+        }
+        self.ns_a.advance();
+        self.ns_b.advance();
+        if self.ns_a.signal() == Signal::Green {
+            let competing = self.ew_waiting();
+            configure_green_timeout_for_pair(&mut self.ns_a, &mut self.ns_b, competing);
+        }
+        Ok(())
     }
 
     /// Attempts to advance the EW pair to the next signal state.
     /// Returns Err if any precondition is violated.
     pub fn try_advance_ew(&mut self) -> Result<(), TransitionError> {
-        unimplemented!()
+        if self.fault_monitor.is_all_off() {
+            return Err(TransitionError::SystemShutdown);
+        }
+        if self.pedestrian.is_crossing() {
+            return Err(TransitionError::PedestrianCrossing);
+        }
+        if self.ns_signal().is_active() {
+            return Err(TransitionError::ConflictingSignal);
+        }
+        let s = self.ew_a.signal();
+        if s == Signal::Off {
+            return Err(TransitionError::InvalidTransition);
+        }
+        let next = s.next();
+        if (s == Signal::Red && next == Signal::RedAmber)
+            || (s == Signal::RedAmber && next == Signal::Green)
+        {
+            if !self.ns_pair_all_red() {
+                return Err(TransitionError::ConflictingSignal);
+            }
+        }
+        self.ew_a.advance();
+        self.ew_b.advance();
+        if self.ew_a.signal() == Signal::Green {
+            let competing = self.ns_waiting();
+            configure_green_timeout_for_pair(&mut self.ew_a, &mut self.ew_b, competing);
+        }
+        Ok(())
     }
 
     /// Processes elapsed time: auto-advances timed phases, checks for faults,
     /// manages pedestrian crossing lifecycle.
     pub fn tick(&mut self) {
-        unimplemented!()
+        let now = self.clock.now();
+        let dt = now.saturating_duration_since(self.last_tick);
+        self.last_tick = now;
+        if dt.is_zero() {
+            return;
+        }
+
+        for inst in [&mut self.ns_a, &mut self.ns_b, &mut self.ew_a, &mut self.ew_b] {
+            inst.tick(dt);
+        }
+
+        if self.pedestrian.is_crossing() {
+            self.pedestrian.tick(dt);
+            if self.pedestrian.should_end() {
+                self.pedestrian.end_crossing();
+            }
+        }
+
+        self.check_progress_faults();
+        self.maybe_auto_advance_ns();
+        self.maybe_auto_advance_ew();
     }
 
     /// Returns the current signal of the NS pair.
     pub fn ns_signal(&self) -> Signal {
-        unimplemented!()
+        self.ns_a.signal()
     }
 
     /// Returns the current signal of the EW pair.
     pub fn ew_signal(&self) -> Signal {
-        unimplemented!()
+        self.ew_a.signal()
     }
 
     /// Returns the signal of a specific installation by direction.
     pub fn signal(&self, direction: Direction) -> Signal {
-        unimplemented!()
+        self.installation(direction).signal()
     }
 
     /// Returns true if all installations are Red.
     pub fn is_all_red(&self) -> bool {
-        unimplemented!()
+        self.ns_a.signal() == Signal::Red
+            && self.ns_b.signal() == Signal::Red
+            && self.ew_a.signal() == Signal::Red
+            && self.ew_b.signal() == Signal::Red
     }
 
     /// Returns true if the system is in the allOff shutdown state.
     pub fn is_all_off(&self) -> bool {
-        unimplemented!()
+        self.fault_monitor.is_all_off()
     }
 
     /// Returns true if the monitoring system has raised an alert.
     pub fn alert_raised(&self) -> bool {
-        unimplemented!()
+        self.fault_monitor.alert_raised()
     }
 
     /// Returns true if pedestrians are currently crossing.
     pub fn ped_crossing_active(&self) -> bool {
-        unimplemented!()
+        self.pedestrian.is_crossing()
     }
 
     /// Returns true if the pedestrian alert is active.
     pub fn ped_alert_active(&self) -> bool {
-        unimplemented!()
+        self.pedestrian.is_alert_active()
     }
 
     /// Registers a pedestrian crossing request.
     pub fn request_pedestrian_crossing(&mut self) {
-        unimplemented!()
+        self.pedestrian.request();
     }
 
     /// Begins the pedestrian crossing phase.
     /// Precondition: allRed, pedWaiting, not allOff.
     pub fn begin_pedestrian_crossing(&mut self) -> Result<(), TransitionError> {
-        unimplemented!()
+        if self.fault_monitor.is_all_off() {
+            return Err(TransitionError::SystemShutdown);
+        }
+        if !self.is_all_red() {
+            return Err(TransitionError::InvalidTransition);
+        }
+        if !self.pedestrian.is_waiting() {
+            return Err(TransitionError::InvalidTransition);
+        }
+        self.pedestrian.begin_crossing();
+        Ok(())
     }
 
     /// Ends the pedestrian crossing phase.
     pub fn end_pedestrian_crossing(&mut self) {
-        unimplemented!()
+        self.pedestrian.end_crossing();
     }
 
     /// Reports a light fault on the given installation direction.
     pub fn report_light_fault(&mut self, direction: Direction) {
-        unimplemented!()
+        self.fault_monitor
+            .report(Fault::LightFailIlluminate(direction));
+        self.shutdown_all();
     }
 
     /// Reports a light de-illumination fault on the given installation direction.
     pub fn report_light_deilluminate_fault(&mut self, direction: Direction) {
-        unimplemented!()
+        self.fault_monitor
+            .report(Fault::LightFailDeilluminate(direction));
+        self.shutdown_all();
     }
 
     /// Reports a sensor fault on the given installation direction.
     pub fn report_sensor_fault(&mut self, direction: Direction) {
-        unimplemented!()
+        self.fault_monitor.report(Fault::SensorFault(direction));
+        self.installation_mut(direction).set_sensor_fault();
     }
 
     /// Reports a progress fault on the given installation direction.
     pub fn report_progress_fault(&mut self, direction: Direction) {
-        unimplemented!()
+        self.fault_monitor.report(Fault::ProgressFault(direction));
+        self.shutdown_all();
     }
 
     /// Returns the green timeout for the given installation direction.
     pub fn green_timeout(&self, direction: Direction) -> Duration {
-        unimplemented!()
+        self.installation(direction).green_timeout()
     }
 
     /// Sets competing traffic on the given direction (sensor detects waiting vehicles).
     pub fn set_competing_traffic(&mut self, direction: Direction, waiting: bool) {
-        unimplemented!()
+        let prev_ew = self.ew_waiting();
+        let prev_ns = self.ns_waiting();
+        self.waiting[waiting_idx(direction)] = waiting;
+
+        if self.ns_signal() == Signal::Green {
+            let competing = self.ew_waiting();
+            configure_green_timeout_for_pair(&mut self.ns_a, &mut self.ns_b, competing);
+            if competing && !prev_ew {
+                self.ns_a.reset_elapsed();
+                self.ns_b.reset_elapsed();
+            }
+        }
+        if self.ew_signal() == Signal::Green {
+            let competing = self.ns_waiting();
+            configure_green_timeout_for_pair(&mut self.ew_a, &mut self.ew_b, competing);
+            if competing && !prev_ns {
+                self.ew_a.reset_elapsed();
+                self.ew_b.reset_elapsed();
+            }
+        }
+    }
+
+    fn installation(&self, direction: Direction) -> &Installation {
+        match direction {
+            Direction::North => &self.ns_a,
+            Direction::South => &self.ns_b,
+            Direction::East => &self.ew_a,
+            Direction::West => &self.ew_b,
+        }
+    }
+
+    fn installation_mut(&mut self, direction: Direction) -> &mut Installation {
+        match direction {
+            Direction::North => &mut self.ns_a,
+            Direction::South => &mut self.ns_b,
+            Direction::East => &mut self.ew_a,
+            Direction::West => &mut self.ew_b,
+        }
+    }
+
+    fn ns_pair_all_red(&self) -> bool {
+        self.ns_a.signal() == Signal::Red && self.ns_b.signal() == Signal::Red
+    }
+
+    fn ew_pair_all_red(&self) -> bool {
+        self.ew_a.signal() == Signal::Red && self.ew_b.signal() == Signal::Red
+    }
+
+    fn ew_waiting(&self) -> bool {
+        self.waiting[waiting_idx(Direction::East)] || self.waiting[waiting_idx(Direction::West)]
+    }
+
+    fn ns_waiting(&self) -> bool {
+        self.waiting[waiting_idx(Direction::North)] || self.waiting[waiting_idx(Direction::South)]
+    }
+
+    fn shutdown_all(&mut self) {
+        self.ns_a.shutdown();
+        self.ns_b.shutdown();
+        self.ew_a.shutdown();
+        self.ew_b.shutdown();
+        self.pedestrian.end_crossing();
+    }
+
+    fn check_progress_faults(&mut self) {
+        if self.fault_monitor.is_all_off() {
+            return;
+        }
+        let dirs = [
+            Direction::North,
+            Direction::South,
+            Direction::East,
+            Direction::West,
+        ];
+        let mut fault_dir = None;
+        for dir in dirs {
+            let (elapsed, max_opt) = {
+                let inst = self.installation(dir);
+                (inst.elapsed(), inst.progress_max_elapsed())
+            };
+            if let Some(max) = max_opt {
+                if elapsed >= max + PROGRESS_TOLERANCE {
+                    fault_dir = Some(dir);
+                    break;
+                }
+            }
+        }
+        if let Some(dir) = fault_dir {
+            self.fault_monitor.report(Fault::ProgressFault(dir));
+            self.shutdown_all();
+        }
+    }
+
+    fn maybe_auto_advance_ns(&mut self) {
+        if self.fault_monitor.is_all_off() || self.pedestrian.is_crossing() {
+            return;
+        }
+        if self.ns_a.signal() != self.ns_b.signal() {
+            return;
+        }
+        if !self.ns_a.should_advance() {
+            return;
+        }
+        let s = self.ns_a.signal();
+        let next = s.next();
+        if s == Signal::RedAmber && next == Signal::Green && !self.ew_pair_all_red() {
+            return;
+        }
+        self.ns_a.advance();
+        self.ns_b.advance();
+        if self.ns_a.signal() == Signal::Green {
+            let competing = self.ew_waiting();
+            configure_green_timeout_for_pair(&mut self.ns_a, &mut self.ns_b, competing);
+        }
+    }
+
+    fn maybe_auto_advance_ew(&mut self) {
+        if self.fault_monitor.is_all_off() || self.pedestrian.is_crossing() {
+            return;
+        }
+        if self.ew_a.signal() != self.ew_b.signal() {
+            return;
+        }
+        if !self.ew_a.should_advance() {
+            return;
+        }
+        let s = self.ew_a.signal();
+        let next = s.next();
+        if s == Signal::RedAmber && next == Signal::Green && !self.ns_pair_all_red() {
+            return;
+        }
+        self.ew_a.advance();
+        self.ew_b.advance();
+        if self.ew_a.signal() == Signal::Green {
+            let competing = self.ns_waiting();
+            configure_green_timeout_for_pair(&mut self.ew_a, &mut self.ew_b, competing);
+        }
     }
 }
 
