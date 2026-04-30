@@ -66,14 +66,8 @@ fn t_s1_full_junction_cycle() {
     assert_eq!(jn.ns_signal(), Signal::RedAmber);
 
     // Paired sync: N = S and E = W at every point
-    assert_eq!(
-        jn.signal(Direction::North),
-        jn.signal(Direction::South)
-    );
-    assert_eq!(
-        jn.signal(Direction::East),
-        jn.signal(Direction::West)
-    );
+    assert_eq!(jn.signal(Direction::North), jn.signal(Direction::South));
+    assert_eq!(jn.signal(Direction::East), jn.signal(Direction::West));
 }
 
 // =============================================================================
@@ -84,7 +78,8 @@ fn t_s1_full_junction_cycle() {
 // =============================================================================
 #[test]
 fn t_s2_pedestrian_interrupts_mid_cycle() {
-    let mut jn = Junction::with_clock(MockClock::new());
+    let clock = MockClock::new();
+    let mut jn = Junction::with_clock(clock.clone());
 
     // Advance NS to Green
     jn.try_advance_ns().unwrap(); // R → RA
@@ -112,11 +107,12 @@ fn t_s2_pedestrian_interrupts_mid_cycle() {
     assert!(jn.try_advance_ns().is_err());
     assert!(jn.try_advance_ew().is_err());
 
-    // After 15s, end crossing
-    // clock.advance(Duration::from_secs(15));
-    // jn.tick();
-    jn.end_pedestrian_crossing();
+    // 15s hold elapses; tick auto-ends the crossing
+    clock.advance(Duration::from_secs(15));
+    jn.tick();
     assert!(!jn.ped_crossing_active());
+    assert!(!jn.ped_alert_active());
+    assert!(jn.is_all_red());
 
     // Regular cycling resumes
     assert!(jn.try_advance_ew().is_ok());
@@ -191,7 +187,12 @@ fn t_s5_light_fault_during_transition() {
     assert!(jn.alert_raised());
 
     // All signals are Off
-    for dir in [Direction::North, Direction::South, Direction::East, Direction::West] {
+    for dir in [
+        Direction::North,
+        Direction::South,
+        Direction::East,
+        Direction::West,
+    ] {
         assert_eq!(jn.signal(dir), Signal::Off);
     }
 }
@@ -261,7 +262,12 @@ fn t_s8_system_startup_initial_state() {
     assert_eq!(jn.ns_signal(), Signal::Red);
     assert_eq!(jn.ew_signal(), Signal::Red);
 
-    for dir in [Direction::North, Direction::South, Direction::East, Direction::West] {
+    for dir in [
+        Direction::North,
+        Direction::South,
+        Direction::East,
+        Direction::West,
+    ] {
         assert_eq!(jn.signal(dir), Signal::Red);
     }
 

@@ -24,6 +24,12 @@ pub struct MockClock {
     current: Rc<std::cell::Cell<Instant>>,
 }
 
+impl Default for MockClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockClock {
     /// Creates a new mock clock starting at the current instant.
     pub fn new() -> Self {

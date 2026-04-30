@@ -1,6 +1,6 @@
-use std::time::Duration;
 use crate::direction::Direction;
 use crate::signal::Signal;
+use std::time::Duration;
 
 /// Default maximum green when competing traffic is present (no sensor fault).
 const DEFAULT_COMPETING_GREEN: Duration = Duration::from_secs(30);

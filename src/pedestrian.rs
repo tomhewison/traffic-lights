@@ -15,6 +15,12 @@ pub struct PedestrianController {
 /// The duration for which pedestrians are held (all traffic on Red).
 pub const PEDESTRIAN_HOLD_DURATION: Duration = Duration::from_secs(15);
 
+impl Default for PedestrianController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PedestrianController {
     /// Creates a new controller with no pending requests and no active crossing.
     pub fn new() -> Self {

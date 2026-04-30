@@ -1,4 +1,4 @@
-use crate::signal::Signal::{Amber, Green, Red, RedAmber, Off};
+use crate::signal::Signal::{Amber, Green, Off, Red, RedAmber};
 
 /// Represents the signal state of a single traffic light installation.
 ///
@@ -18,7 +18,7 @@ impl Signal {
     /// Off is terminal and maps to Off.
     pub fn next(self) -> Signal {
         // match feels very nice in rust
-        match self  {
+        match self {
             Red => RedAmber,
             RedAmber => Green,
             Green => Amber,
@@ -45,7 +45,7 @@ impl Signal {
     pub fn max_duration(self) -> Option<std::time::Duration> {
         match self {
             Green | Red | Off => None,
-            RedAmber | Amber => Some(std::time::Duration::from_millis(1500))
+            RedAmber | Amber => Some(std::time::Duration::from_millis(1500)),
         }
     }
 }

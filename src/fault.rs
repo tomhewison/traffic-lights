@@ -20,6 +20,12 @@ pub struct FaultMonitor {
     faults: Vec<Fault>,
 }
 
+impl Default for FaultMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FaultMonitor {
     /// Creates a new fault monitor with no faults.
     pub fn new() -> Self {

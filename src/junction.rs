@@ -1,11 +1,11 @@
-use std::time::Duration;
-use crate::clock::Clock;
+use crate::clock::{Clock, SystemClock};
 use crate::direction::Direction;
 use crate::error::TransitionError;
 use crate::fault::{Fault, FaultMonitor};
-use crate::installation::{configure_green_timeout_for_pair, Installation};
+use crate::installation::{Installation, configure_green_timeout_for_pair};
 use crate::pedestrian::PedestrianController;
 use crate::signal::Signal;
+use std::time::Duration;
 
 /// Extra time beyond a phase's nominal maximum before a progress fault is raised.
 const PROGRESS_TOLERANCE: Duration = Duration::from_millis(500);
@@ -62,17 +62,19 @@ impl<C: Clock> Junction<C> {
         if self.pedestrian.is_crossing() {
             return Err(TransitionError::PedestrianCrossing);
         }
+        if self.ew_signal().is_active() {
+            return Err(TransitionError::ConflictingSignal);
+        }
         let s = self.ns_a.signal();
         if s == Signal::Off {
             return Err(TransitionError::InvalidTransition);
         }
         let next = s.next();
-        if (s == Signal::Red && next == Signal::RedAmber)
-            || (s == Signal::RedAmber && next == Signal::Green)
+        if ((s == Signal::Red && next == Signal::RedAmber)
+            || (s == Signal::RedAmber && next == Signal::Green))
+            && !self.ew_pair_all_red()
         {
-            if !self.ew_pair_all_red() {
-                return Err(TransitionError::ConflictingSignal);
-            }
+            return Err(TransitionError::ConflictingSignal);
         }
         self.ns_a.advance();
         self.ns_b.advance();
@@ -100,12 +102,11 @@ impl<C: Clock> Junction<C> {
             return Err(TransitionError::InvalidTransition);
         }
         let next = s.next();
-        if (s == Signal::Red && next == Signal::RedAmber)
-            || (s == Signal::RedAmber && next == Signal::Green)
+        if ((s == Signal::Red && next == Signal::RedAmber)
+            || (s == Signal::RedAmber && next == Signal::Green))
+            && !self.ns_pair_all_red()
         {
-            if !self.ns_pair_all_red() {
-                return Err(TransitionError::ConflictingSignal);
-            }
+            return Err(TransitionError::ConflictingSignal);
         }
         self.ew_a.advance();
         self.ew_b.advance();
@@ -126,7 +127,12 @@ impl<C: Clock> Junction<C> {
             return;
         }
 
-        for inst in [&mut self.ns_a, &mut self.ns_b, &mut self.ew_a, &mut self.ew_b] {
+        for inst in [
+            &mut self.ns_a,
+            &mut self.ns_b,
+            &mut self.ew_a,
+            &mut self.ew_b,
+        ] {
             inst.tick(dt);
         }
 
@@ -183,6 +189,11 @@ impl<C: Clock> Junction<C> {
     /// Returns true if the pedestrian alert is active.
     pub fn ped_alert_active(&self) -> bool {
         self.pedestrian.is_alert_active()
+    }
+
+    /// Returns true if a pedestrian has requested a crossing (not yet started).
+    pub fn is_ped_waiting(&self) -> bool {
+        self.pedestrian.is_waiting()
     }
 
     /// Registers a pedestrian crossing request.
@@ -324,11 +335,12 @@ impl<C: Clock> Junction<C> {
                 let inst = self.installation(dir);
                 (inst.elapsed(), inst.progress_max_elapsed())
             };
-            if let Some(max) = max_opt {
-                if elapsed >= max + PROGRESS_TOLERANCE {
+            match max_opt {
+                Some(max) if elapsed >= max + PROGRESS_TOLERANCE => {
                     fault_dir = Some(dir);
                     break;
                 }
+                _ => {}
             }
         }
         if let Some(dir) = fault_dir {
@@ -381,6 +393,19 @@ impl<C: Clock> Junction<C> {
             let competing = self.ns_waiting();
             configure_green_timeout_for_pair(&mut self.ew_a, &mut self.ew_b, competing);
         }
+    }
+}
+
+impl Default for Junction<SystemClock> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Junction<SystemClock> {
+    /// Creates a junction backed by the real system clock.
+    pub fn new() -> Self {
+        Self::with_clock(SystemClock)
     }
 }
 
@@ -499,7 +524,12 @@ mod tests {
         assert!(jn.is_all_red());
 
         // Check each direction individually
-        for dir in [Direction::North, Direction::South, Direction::East, Direction::West] {
+        for dir in [
+            Direction::North,
+            Direction::South,
+            Direction::East,
+            Direction::West,
+        ] {
             assert_eq!(jn.signal(dir), Signal::Red);
         }
     }
@@ -565,27 +595,17 @@ mod tests {
     #[test]
     fn t_i6b_sensor_fault_green_does_not_exceed_30s() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         jn.report_sensor_fault(Direction::East);
 
-        // Advance EW to Green: R → RA (1.5s) → G
         jn.try_advance_ew().unwrap(); // R → RA
-        // Simulate 1.5s for RA phase
-        // clock.advance(Duration::from_millis(1500));
-        // jn.tick();
         jn.try_advance_ew().unwrap(); // RA → G
         assert_eq!(jn.ew_signal(), Signal::Green);
 
-        // After 30s, the Green should auto-advance to Amber
-        // clock.advance(Duration::from_secs(30));
-        // jn.tick();
-        // assert_eq!(jn.ew_signal(), Signal::Amber);
-
-        // NOTE: This test requires MockClock to be implemented.
-        // Once MockClock works, uncomment the clock.advance + tick lines above
-        // and remove this manual advance.
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_secs(30));
+        jn.tick();
+        assert_eq!(jn.ew_signal(), Signal::Amber);
     }
 
     // =========================================================================
@@ -615,17 +635,14 @@ mod tests {
     #[test]
     fn t_i9a_red_amber_auto_advances_at_1500ms() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         jn.try_advance_ns().unwrap(); // R → RA
         assert_eq!(jn.ns_signal(), Signal::RedAmber);
 
-        // Advance clock by 1.5s and tick
-        // clock.advance(Duration::from_millis(1500));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Green);
-
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_millis(1500));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Green);
     }
 
     // =========================================================================
@@ -636,7 +653,7 @@ mod tests {
     #[test]
     fn t_i9b_amber_auto_advances_at_1500ms() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         // Advance NS to Amber: R → RA → G → A
         jn.try_advance_ns().unwrap();
@@ -644,12 +661,9 @@ mod tests {
         jn.try_advance_ns().unwrap();
         assert_eq!(jn.ns_signal(), Signal::Amber);
 
-        // Advance clock by 1.5s and tick
-        // clock.advance(Duration::from_millis(1500));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Red);
-
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_millis(1500));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Red);
     }
 
     // =========================================================================
@@ -660,22 +674,18 @@ mod tests {
     #[test]
     fn t_i10a_green_with_competing_traffic_advances_at_30s() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         // Advance NS to Green
         jn.try_advance_ns().unwrap();
         jn.try_advance_ns().unwrap();
         assert_eq!(jn.ns_signal(), Signal::Green);
 
-        // Indicate competing traffic on EW
         jn.set_competing_traffic(Direction::East, true);
 
-        // After 30s, NS should transition to Amber
-        // clock.advance(Duration::from_secs(30));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Amber);
-
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_secs(30));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Amber);
     }
 
     // =========================================================================
@@ -686,18 +696,15 @@ mod tests {
     #[test]
     fn t_i10b_green_with_competing_traffic_still_green_at_29s() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         jn.try_advance_ns().unwrap();
         jn.try_advance_ns().unwrap();
         jn.set_competing_traffic(Direction::East, true);
 
-        // At 29s, still Green
-        // clock.advance(Duration::from_secs(29));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Green);
-
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_secs(29));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Green);
     }
 
     // =========================================================================
@@ -708,18 +715,15 @@ mod tests {
     #[test]
     fn t_i11a_green_without_competing_traffic_stays_green_at_60s() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         jn.try_advance_ns().unwrap();
         jn.try_advance_ns().unwrap();
         assert_eq!(jn.ns_signal(), Signal::Green);
 
-        // No competing traffic — Green should remain indefinitely
-        // clock.advance(Duration::from_secs(60));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Green);
-
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_secs(60));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Green);
     }
 
     // =========================================================================
@@ -730,22 +734,18 @@ mod tests {
     #[test]
     fn t_i11b_green_timeout_resets_when_traffic_arrives() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         jn.try_advance_ns().unwrap();
         jn.try_advance_ns().unwrap();
 
-        // At 45s, competing traffic arrives
-        // clock.advance(Duration::from_secs(45));
-        // jn.tick();
-        // jn.set_competing_traffic(Direction::East, true);
+        clock.advance(Duration::from_secs(45));
+        jn.tick();
+        jn.set_competing_traffic(Direction::East, true);
 
-        // NS should now have 30s remaining before transitioning
-        // clock.advance(Duration::from_secs(30));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Amber);
-
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_secs(30));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Amber);
     }
 
     // =========================================================================
@@ -1060,6 +1060,30 @@ mod tests {
     }
 
     // =========================================================================
+    // T-H15 | Hoare: End pedestrian crossing after 15s hold | FUN-05
+    // Expected: pedCrossing, pedWaiting, pedAlert all false; allRed true.
+    // Junction-level: verifies tick() auto-ends crossing at 15s.
+    // =========================================================================
+    #[test]
+    fn t_h15_end_crossing_after_15s_hold() {
+        let clock = MockClock::new();
+        let mut jn = Junction::with_clock(clock.clone());
+
+        jn.request_pedestrian_crossing();
+        jn.begin_pedestrian_crossing().unwrap();
+        assert!(jn.ped_crossing_active());
+        assert!(jn.ped_alert_active());
+
+        clock.advance(Duration::from_secs(15));
+        jn.tick();
+
+        assert!(!jn.ped_crossing_active());
+        assert!(!jn.is_ped_waiting());
+        assert!(!jn.ped_alert_active());
+        assert!(jn.is_all_red());
+    }
+
+    // =========================================================================
     // T-H16 | Hoare: Fault during pedestrian crossing | SAF-05, SAF-06, SAF-07
     // Fault occurs during pedestrian crossing.
     // Expected: System enters allOff; pedCrossing is false; alert raised.
@@ -1115,7 +1139,12 @@ mod tests {
         assert!(jn.alert_raised());
 
         // Check all signals are Off
-        for dir in [Direction::North, Direction::South, Direction::East, Direction::West] {
+        for dir in [
+            Direction::North,
+            Direction::South,
+            Direction::East,
+            Direction::West,
+        ] {
             assert_eq!(jn.signal(dir), Signal::Off);
         }
     }
@@ -1134,7 +1163,12 @@ mod tests {
         assert!(jn.is_all_off());
         assert!(jn.alert_raised());
 
-        for dir in [Direction::North, Direction::South, Direction::East, Direction::West] {
+        for dir in [
+            Direction::North,
+            Direction::South,
+            Direction::East,
+            Direction::West,
+        ] {
             assert_eq!(jn.signal(dir), Signal::Off);
         }
     }
@@ -1167,21 +1201,17 @@ mod tests {
     #[test]
     fn t_b1_red_amber_transitions_at_exactly_1500ms() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         jn.try_advance_ns().unwrap(); // R → RA
 
-        // At 1499ms — should still be RA
-        // clock.advance(Duration::from_millis(1499));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::RedAmber);
+        clock.advance(Duration::from_millis(1499));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::RedAmber);
 
-        // At 1500ms — should transition to Green
-        // clock.advance(Duration::from_millis(1));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Green);
-
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_millis(1));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Green);
     }
 
     // =========================================================================
@@ -1191,24 +1221,20 @@ mod tests {
     #[test]
     fn t_b2_amber_transitions_at_exactly_1500ms() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         // Advance NS: R → RA → G → A
         jn.try_advance_ns().unwrap();
         jn.try_advance_ns().unwrap();
         jn.try_advance_ns().unwrap();
 
-        // At 1499ms — should still be Amber
-        // clock.advance(Duration::from_millis(1499));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Amber);
+        clock.advance(Duration::from_millis(1499));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Amber);
 
-        // At 1500ms — should transition to Red
-        // clock.advance(Duration::from_millis(1));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Red);
-
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_millis(1));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Red);
     }
 
     // =========================================================================
@@ -1218,23 +1244,41 @@ mod tests {
     #[test]
     fn t_b3_green_with_competing_traffic_transitions_at_30s() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         jn.try_advance_ns().unwrap();
         jn.try_advance_ns().unwrap();
         jn.set_competing_traffic(Direction::East, true);
 
-        // At 29s — still Green
-        // clock.advance(Duration::from_secs(29));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Green);
+        clock.advance(Duration::from_secs(29));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Green);
 
-        // At 30s — should transition to Amber
-        // clock.advance(Duration::from_secs(1));
-        // jn.tick();
-        // assert_eq!(jn.ns_signal(), Signal::Amber);
+        clock.advance(Duration::from_secs(1));
+        jn.tick();
+        assert_eq!(jn.ns_signal(), Signal::Amber);
+    }
 
-        todo!("Complete once MockClock is implemented");
+    // =========================================================================
+    // T-B4 | Boundary: Pedestrian hold for exactly 15s | FUN-05
+    // Junction-level: crossing does NOT end at 14.999s, DOES end at 15s.
+    // =========================================================================
+    #[test]
+    fn t_b4_pedestrian_hold_exactly_15s() {
+        let clock = MockClock::new();
+        let mut jn = Junction::with_clock(clock.clone());
+
+        jn.request_pedestrian_crossing();
+        jn.begin_pedestrian_crossing().unwrap();
+
+        clock.advance(Duration::from_millis(14_999));
+        jn.tick();
+        assert!(jn.ped_crossing_active());
+
+        clock.advance(Duration::from_millis(1));
+        jn.tick();
+        assert!(!jn.ped_crossing_active());
+        assert!(jn.is_all_red());
     }
 
     // =========================================================================
@@ -1244,25 +1288,30 @@ mod tests {
     #[test]
     fn t_b5_progress_fault_amber_detected_after_tolerance() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         // Advance NS: R → RA → G → A
         jn.try_advance_ns().unwrap();
         jn.try_advance_ns().unwrap();
         jn.try_advance_ns().unwrap();
+        assert_eq!(jn.ns_signal(), Signal::Amber);
 
-        // At 1.5s — no fault (Amber is within its max duration)
-        // clock.advance(Duration::from_millis(1500));
-        // jn.tick();
-        // assert!(!jn.is_all_off());
+        // Exactly 1.5s in Amber: auto-advance to Red, no progress fault
+        clock.advance(Duration::from_millis(1500));
+        jn.tick();
+        assert!(!jn.is_all_off());
+        assert_eq!(jn.ns_signal(), Signal::Red);
 
-        // At 1.5s + tolerance — fault detected, signal stuck
-        // clock.advance(Duration::from_millis(500)); // example tolerance
-        // jn.tick();
-        // assert!(jn.is_all_off());
-        // assert!(jn.alert_raised());
+        // Amber again; one tick beyond max + tolerance without advancing ⇒ shutdown
+        jn.try_advance_ns().unwrap();
+        jn.try_advance_ns().unwrap();
+        jn.try_advance_ns().unwrap();
+        assert_eq!(jn.ns_signal(), Signal::Amber);
 
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_millis(1500) + PROGRESS_TOLERANCE);
+        jn.tick();
+        assert!(jn.is_all_off());
+        assert!(jn.alert_raised());
     }
 
     // =========================================================================
@@ -1272,23 +1321,27 @@ mod tests {
     #[test]
     fn t_b6_progress_fault_green_detected_after_tolerance() {
         let clock = MockClock::new();
-        let mut jn = Junction::with_clock(clock);
+        let mut jn = Junction::with_clock(clock.clone());
 
         jn.try_advance_ns().unwrap();
         jn.try_advance_ns().unwrap();
         jn.set_competing_traffic(Direction::East, true);
 
-        // At 30s — no fault (Green can still transition)
-        // clock.advance(Duration::from_secs(30));
-        // jn.tick();
-        // assert!(!jn.is_all_off());
+        clock.advance(Duration::from_secs(30));
+        jn.tick();
+        assert!(!jn.is_all_off());
+        assert_eq!(jn.ns_signal(), Signal::Amber);
 
-        // At 30s + tolerance — fault detected
-        // clock.advance(Duration::from_millis(500));
-        // jn.tick();
-        // assert!(jn.is_all_off());
-        // assert!(jn.alert_raised());
+        // Fresh Green with competing traffic; one tick past 30s + tolerance ⇒ progress fault
+        let clock = MockClock::new();
+        let mut jn = Junction::with_clock(clock.clone());
+        jn.try_advance_ns().unwrap();
+        jn.try_advance_ns().unwrap();
+        jn.set_competing_traffic(Direction::East, true);
 
-        todo!("Complete once MockClock is implemented");
+        clock.advance(Duration::from_secs(30) + PROGRESS_TOLERANCE);
+        jn.tick();
+        assert!(jn.is_all_off());
+        assert!(jn.alert_raised());
     }
 }
